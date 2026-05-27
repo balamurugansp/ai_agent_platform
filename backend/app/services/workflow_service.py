@@ -238,3 +238,94 @@ async def seed_templates() -> None:
 
         await session.commit()
         logger.info("Templates seeded: Content Creation Pipeline, Log Analysis Team")
+
+
+# ─── CRUD helpers ─────────────────────────────────────────────────────────────
+
+async def list_workflows(db: AsyncSession) -> list:
+    result = await db.execute(select(Workflow).order_by(Workflow.created_at.desc()))
+    return result.scalars().all()
+
+
+async def get_workflow(db: AsyncSession, workflow_id: str):
+    result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+    return result.scalar_one_or_none()
+
+
+async def create_workflow(db: AsyncSession, data) -> Workflow:
+    wf = Workflow(
+        name=data.name,
+        description=data.description,
+        nodes=data.nodes,
+        edges=data.edges,
+        entry_point=data.entry_point,
+        template_name=getattr(data, "template_name", None),
+    )
+    db.add(wf)
+    await db.commit()
+    await db.refresh(wf)
+    return wf
+
+
+async def update_workflow(db: AsyncSession, workflow_id: str, data) -> Workflow | None:
+    wf = await get_workflow(db, workflow_id)
+    if not wf:
+        return None
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(wf, field, value)
+    await db.commit()
+    await db.refresh(wf)
+    return wf
+
+
+async def delete_workflow(db: AsyncSession, workflow_id: str) -> bool:
+    wf = await get_workflow(db, workflow_id)
+    if not wf:
+        return False
+    await db.delete(wf)
+    await db.commit()
+    return True
+
+
+# ─── Run CRUD ─────────────────────────────────────────────────────────────────
+
+from app.models.run import WorkflowRun, RunMessage  # noqa: E402
+
+
+async def create_run(
+    db: AsyncSession,
+    workflow_id: str,
+    input_message: str,
+    trigger_source: str = "api",
+    trigger_data: dict | None = None,
+) -> WorkflowRun:
+    run = WorkflowRun(
+        workflow_id=workflow_id,
+        input_message=input_message,
+        trigger_source=trigger_source,
+        trigger_data=trigger_data or {},
+        status="pending",
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+    return run
+
+
+async def list_runs(db: AsyncSession, workflow_id: str) -> list:
+    result = await db.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.workflow_id == workflow_id)
+        .order_by(WorkflowRun.started_at.desc())
+    )
+    return result.scalars().all()
+
+
+async def get_run_with_messages(db: AsyncSession, run_id: str) -> WorkflowRun | None:
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(WorkflowRun)
+        .options(selectinload(WorkflowRun.messages))
+        .where(WorkflowRun.id == run_id)
+    )
+    return result.scalar_one_or_none()
