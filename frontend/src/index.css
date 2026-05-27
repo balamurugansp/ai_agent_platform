@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body { @apply bg-gray-950 text-gray-100 font-sans; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { @apply bg-gray-900; }
+  ::-webkit-scrollbar-thumb { @apply bg-gray-600 rounded-full; }
+}
+
+/* React Flow dark theme overrides */
+.react-flow__background { background-color: #030712; }
+.react-flow__controls button { background: #1f2937; border-color: #374151; color: #e5e7eb; }
+.react-flow__controls button:hover { background: #374151; }
+.react-flow__minimap { background: #111827; }

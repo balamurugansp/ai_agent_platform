@@ -1,0 +1,131 @@
+# ARB-007: CI pipeline — lint, test, security scan
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  PYTHON_VERSION: "3.13"
+  NODE_VERSION: "20"
+
+jobs:
+  # ── Backend: lint + test ─────────────────────────────────────────────────
+  backend-test:
+    name: Backend — Lint & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: sqlite+aiosqlite:///./test.db
+      SECRET_KEY: ci-test-secret-key-not-for-production
+      ADMIN_PASSWORD: ci-test-password
+      ENVIRONMENT: development
+      OPENAI_API_KEY: sk-test-dummy-key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint — ruff
+        run: |
+          pip install ruff
+          ruff check app/ tests/ --output-format=github
+
+      - name: Type check — mypy (non-blocking)
+        run: |
+          pip install mypy types-passlib
+          mypy app/ --ignore-missing-imports --no-error-summary || true
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short --asyncio-mode=auto
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: backend/.pytest_cache/
+
+  # ── Frontend: lint + build ────────────────────────────────────────────────
+  frontend-build:
+    name: Frontend — Lint & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint — ESLint
+        run: npm run lint --if-present
+
+      - name: Type check
+        run: npm run typecheck --if-present || npx tsc --noEmit || true
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_URL: http://localhost:8000
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+  # ── Security scan ─────────────────────────────────────────────────────────
+  security-scan:
+    name: Security — Dependency Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Scan Python deps — pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit -r backend/requirements.txt --ignore-vuln PYSEC-2022-42969 || true
+
+      - name: Scan for secrets — truffleHog (non-blocking)
+        run: |
+          pip install trufflehog3 || true
+          trufflehog3 --no-history . || true

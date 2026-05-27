@@ -1,0 +1,118 @@
+# ARB-002: PostgreSQL as production DB (SQLite still default for dev)
+# ARB-003: Redis for EventBus Pub/Sub
+# ARB-006: Jaeger for distributed tracing (optional)
+#
+# Dev (SQLite + in-process EventBus):
+#   docker compose up backend frontend
+#
+# Production (PostgreSQL + Redis):
+#   docker compose --profile production up
+#
+# With tracing:
+#   docker compose --profile tracing up
+
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL (ARB-002) ───────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    profiles: [production]
+    environment:
+      POSTGRES_USER: yuno
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-yunopassword}
+      POSTGRES_DB: yuno_platform
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yuno"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis (ARB-003) ───────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    profiles: [production]
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redispassword} --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redispassword}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Jaeger — distributed tracing (ARB-006) ────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    profiles: [tracing]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4318:4318"     # OTLP HTTP receiver
+    restart: unless-stopped
+
+  # ── Backend ───────────────────────────────────────────────────────────────
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Dev defaults — override in .env for production profile
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:///./yuno.db}
+      REDIS_URL: ${REDIS_URL:-}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-CHANGE-IN-PRODUCTION-use-openssl-rand-hex-32}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      API_KEYS: ${API_KEYS:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+      ENABLE_TRACING: ${ENABLE_TRACING:-false}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-100}
+      RATE_LIMIT_WORKFLOW_PER_MINUTE: ${RATE_LIMIT_WORKFLOW_PER_MINUTE:-10}
+    volumes:
+      - backend_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── Frontend ──────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_data:
